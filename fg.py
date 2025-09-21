@@ -9,7 +9,7 @@ def build_and_solve_pose_2d_dataset(cov_params, dataset_path="synthetic_pose_2d_
       - odom_sigma: [σx, σy, σθ]
       - gps_sigma: [σx, σy]
     """
-    data = np.load(dataset_path, allow_pickle=True)
+    data = np.load(f"data/{dataset_path}", allow_pickle=True)
     gt_poses = data["gt_poses"]
     odom_meas = data["odom_meas"]
     gps_meas = data["gps_meas"]
@@ -21,11 +21,9 @@ def build_and_solve_pose_2d_dataset(cov_params, dataset_path="synthetic_pose_2d_
     odom_model  = gtsam.noiseModel.Diagonal.Sigmas(odom_sigma)
     gps_model   = gtsam.noiseModel.Diagonal.Sigmas(gps_sigma)
 
-    # Factor graph + initial values
     graph = gtsam.NonlinearFactorGraph()
     initial = gtsam.Values()
 
-    # Add prior on first pose
     graph.add(gtsam.PriorFactorPose2(0, gtsam.Pose2(*gt_poses[0]), prior_model))
     initial.insert(0, gtsam.Pose2(0.0, 0.0, 0.0))  
 
@@ -42,11 +40,12 @@ def build_and_solve_pose_2d_dataset(cov_params, dataset_path="synthetic_pose_2d_
     for (i, gx, gy) in gps_meas:
         graph.add(gtsam.PriorFactorPose2(int(i), gtsam.Pose2(gx, gy, 0.0), gps_model))
 
-    # Optimize with Gauss-Newton
     optimizer = gtsam.GaussNewtonOptimizer(graph, initial)
     result = optimizer.optimize()
+    # params = gtsam.LevenbergMarquardtParams()
+    # optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial, params)
+    # result = optimizer.optimize()
 
-    # Collect trajectory
     traj = np.array([[result.atPose2(i).x(), result.atPose2(i).y(), result.atPose2(i).theta()] for i in range(len(gt_poses))])
 
     return traj, gt_poses
@@ -55,9 +54,9 @@ def build_and_solve_pose_2d_dataset(cov_params, dataset_path="synthetic_pose_2d_
 if __name__ == "__main__":
     param_sets = [
         ([0.05, 0.05, 0.02], [1, 1, 999.0]),   
-        ([0.5, 0.5, 0.2], [2.0, 2.0, 999.0]),      
+        ([0.5, 0.5, 0.25], [2.0, 2.0, 999.0]),      
         ([0.1, 0.1, 0.05], [2.5, 2.5, 999.0]),
-        ([0.1, 0.1, 0.1], [2.56, 2.56, 999.0]),
+        ([0.1, 0.1, 0.05], [3, 3, 999.0]),
     ]
 
     for idx, params in enumerate(param_sets):
