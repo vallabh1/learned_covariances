@@ -1,7 +1,7 @@
 import numpy as np
 import gtsam
 
-def build_and_solve_pose_2d_dataset(cov_params, dataset_path="synthetic_pose_2d_dataset_1.npz"):
+def build_and_solve_pose_2d_fg(cov_params, dataset_path="synthetic_pose_2d_dataset_1.npz"):
     """
     Build and solve a Pose2 SLAM graph with given covariance params.
     
@@ -40,11 +40,11 @@ def build_and_solve_pose_2d_dataset(cov_params, dataset_path="synthetic_pose_2d_
     for (i, gx, gy) in gps_meas:
         graph.add(gtsam.PriorFactorPose2(int(i), gtsam.Pose2(gx, gy, 0.0), gps_model))
 
-    optimizer = gtsam.GaussNewtonOptimizer(graph, initial)
-    result = optimizer.optimize()
-    # params = gtsam.LevenbergMarquardtParams()
-    # optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial, params)
+    # optimizer = gtsam.GaussNewtonOptimizer(graph, initial)
     # result = optimizer.optimize()
+    params = gtsam.LevenbergMarquardtParams()
+    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial, params)
+    result = optimizer.optimize()
 
     traj = np.array([[result.atPose2(i).x(), result.atPose2(i).y(), result.atPose2(i).theta()] for i in range(len(gt_poses))])
 
@@ -53,13 +53,13 @@ def build_and_solve_pose_2d_dataset(cov_params, dataset_path="synthetic_pose_2d_
 
 if __name__ == "__main__":
     param_sets = [
-        ([0.05, 0.05, 0.02], [1, 1, 999.0]),   
-        ([0.5, 0.5, 0.25], [2.0, 2.0, 999.0]),      
+        ([0.1, 0.1, 0.05], [2, 2, 999.0]),   
+        ([0.5, 0.5, 0.25], [0.1, 0.1, 999.0]),      
         ([0.1, 0.1, 0.05], [2.5, 2.5, 999.0]),
-        ([0.1, 0.1, 0.05], [3, 3, 999.0]),
+        ([0.1, 0.1, 0.05], [4, 4, 999.0]),
     ]
 
     for idx, params in enumerate(param_sets):
-        traj, gt = build_and_solve_pose_2d_dataset(params)
+        traj, gt = build_and_solve_pose_2d_fg(params)
         np.savez(f"output/optimized_traj_{idx}.npz", traj=traj, gt=gt, params=params)
         print(f"Saved output/optimized_traj_{idx}.npz with params {params}")

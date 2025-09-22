@@ -1,11 +1,11 @@
 import numpy as np
 
 def get_pose_2d_dataset_1(
-    N1=45, N2=50, N3=45,
+    N1=20, N2=25, N3=20,
     step_size=1.0,
     odom_sigma=(0.1, 0.1, 0.05),   # x,y,theta noise for odometry
-    gps_sigma=(0.5, 0.5),          # x,y noise for gps
-    gps_rate=15,                    # one gps every gps_rate poses
+    gps_sigma=(1, 1),          # x,y noise for gps
+    gps_rate=5,                    # one gps every gps_rate poses
     seed=42
 ):
     """
