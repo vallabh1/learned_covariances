@@ -9,7 +9,7 @@ def build_and_solve_pose_2d_fg(cov_params, dataset_path="synthetic_pose_2d_datas
       - odom_sigma: [σx, σy, σθ]
       - gps_sigma: [σx, σy]
     """
-    data = np.load(f"data/{dataset_path}", allow_pickle=True)
+    data = np.load(f"data/pose2d/{dataset_path}", allow_pickle=True)
     gt_poses = data["gt_poses"]
     odom_meas = data["odom_meas"]
     gps_meas = data["gps_meas"]
@@ -53,13 +53,13 @@ def build_and_solve_pose_2d_fg(cov_params, dataset_path="synthetic_pose_2d_datas
 
 if __name__ == "__main__":
     param_sets = [
-        ([0.1, 0.1, 0.05], [2, 2, 999.0]),   
+        ([0.1, 0.1, 0.05], [0.1, 0.1, 999.0]),   
         ([0.5, 0.5, 0.25], [0.1, 0.1, 999.0]),      
         ([0.1, 0.1, 0.05], [2.5, 2.5, 999.0]),
         ([0.1, 0.1, 0.05], [4, 4, 999.0]),
     ]
-
-    for idx, params in enumerate(param_sets):
-        traj, gt = build_and_solve_pose_2d_fg(params)
-        np.savez(f"output/optimized_traj_{idx}.npz", traj=traj, gt=gt, params=params)
-        print(f"Saved output/optimized_traj_{idx}.npz with params {params}")
+    for did in range(1, 7):
+        for idx, params in enumerate(param_sets):
+            traj, gt = build_and_solve_pose_2d_fg(params, dataset_path=f"synthetic_pose_2d_dataset_{did}.npz")
+            np.savez(f"output/pose2d_trajs/traj_ds_{did}_{idx}.npz", traj=traj, gt=gt, params=params)
+            print(f"Saved output/optimized_traj_{idx}.npz with params {params}")

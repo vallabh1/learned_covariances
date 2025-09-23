@@ -5,11 +5,14 @@ import matplotlib.pyplot as plt
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from multiprocessing import cpu_count
 import time
+from pathlib import Path
+
 def loss_function_pose2d(traj, gt):
     total = 0.0
     for i in range(len(gt)):
-        diff = gtsam.Pose2(gt[i,0], gt[i,1], gt[i,2]).between(
-                  gtsam.Pose2(traj[i,0], traj[i,1], traj[i,2]))
+        # diff = gtsam.Pose2(gt[i,0], gt[i,1], gt[i,2]).between(
+        #           gtsam.Pose2(traj[i,0], traj[i,1], traj[i,2]))
+        diff = gtsam.Pose2(traj[i,0], traj[i,1], traj[i,2]).compose((gtsam.Pose2(gt[i,0], gt[i,1], gt[i,2]).inverse()))
         vec = gtsam.Pose2.Logmap(diff)
         total += np.dot(vec, vec)
     return total / len(gt)
@@ -32,7 +35,7 @@ def _compute_jacobian_column(args):
     vec_p = residual_vector_pose2d(traj_p, gt)
     return i, (vec_p - base_vec) / eps
 
-def getJacobian_pose2d(theta, eps=1e-3, dataset_path="synthetic_pose_2d_dataset_1.npz", parallel=True, n_workers=16):
+def getJacobian_pose2d(theta, eps=1e-3, dataset_path="synthetic_pose_2d_dataset_1.npz", parallel=False, n_workers=8):
     base_traj, gt = build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path)
     base_vec = residual_vector_pose2d(base_traj, gt)
     # print(parallel)
@@ -46,14 +49,11 @@ def getJacobian_pose2d(theta, eps=1e-3, dataset_path="synthetic_pose_2d_dataset_
             n_workers = min(cpu_count(), m)
         # print(f"Using {n_workers} workers")
         
-        # Prepare arguments for parallel computation
         args_list = [(i, theta, eps, dataset_path, base_vec, gt) for i in range(m)]
         
-        # Use ThreadPoolExecutor for I/O bound tasks (file loading)
         with ThreadPoolExecutor(max_workers=n_workers) as executor:
             results = list(executor.map(_compute_jacobian_column, args_list))
         
-        # Fill the Jacobian matrix
         for i, column in results:
             S[:, i] = column
     else:
@@ -70,74 +70,98 @@ def getJacobian_pose2d(theta, eps=1e-3, dataset_path="synthetic_pose_2d_dataset_
 
     return S, base_vec
 
-def numerical_gradient_pose2d(theta, eps=1e-3, dataset_path="synthetic_pose_2d_dataset_1.npz"):
+
+def _dataset_grad_contribution(args):
+    dataset_id, theta, eps, dataset_path_template = args
+    dataset_path = dataset_path_template.format(did=dataset_id)
+    # Disable per-theta parallelism here to avoid nested parallelism
+    S, res = getJacobian_pose2d(theta, eps, dataset_path, parallel=True)
+    return S.T @ res / len(res)
+
+def gradient_pose2d(theta, eps=1e-3, dataset_path_template="synthetic_pose_2d_dataset_{did}.npz", dataset_size=6):
     grad = np.zeros_like(theta)
+    args = [(dataset_id, theta, eps, dataset_path_template) for dataset_id in range(1, dataset_size+1)]
+    # Parallelize across datasets using processes
+    with ProcessPoolExecutor(max_workers=min(cpu_count(), dataset_size)) as executor:
+        contributions = list(executor.map(_dataset_grad_contribution, args))
+    for contrib in contributions:
+        grad += contrib
+    grad /= dataset_size
+    return grad
+
+
+
+def frank_wolfe_step(theta, grad, t, lam_min, lam_max, M=1000):
+    """
+    Perform one Frank-Wolfe step with box constraints.
+    theta: current parameter vector
+    grad: gradient vector (∂L/∂θ)
+    t: iteration index
+    lam_min, lam_max: arrays of same shape as theta
+    M: parameter controlling step size decay
+    """
+    # LP over box constraints
+    s_star = np.zeros_like(theta)
     for i in range(len(theta)):
-        theta_p = theta.copy(); theta_p[i] += eps
-        theta_m = theta.copy(); theta_m[i] -= eps
-        Lp = loss_function_pose2d(*build_and_solve_pose_2d_fg((theta_p[0:3], theta_p[3:6]), dataset_path))
-        Lm = loss_function_pose2d(*build_and_solve_pose_2d_fg((theta_m[0:3], theta_m[3:6]), dataset_path))
-        grad[i] = (Lp - Lm) / (2*eps)
-    return grad
+        if grad[i] > 0:
+            s_star[i] = lam_min[i]
+        else:
+            s_star[i] = lam_max[i]
 
-def gradient_pose2d(theta, eps=1e-3, dataset_path="synthetic_pose_2d_dataset_1.npz"):
-    S, res = getJacobian_pose2d(theta, eps, dataset_path, parallel=True, n_workers=24)
-    grad = S.T @ res / len(res)
-    return grad
+    alpha = 2.0 / (M + t + 1)
 
+    # Update rule
+    return theta + alpha * (s_star - theta)
 
-
-def bilevel_optim_numerical_grad_pose2d(theta_initial, eps=1e-6, learning_rate=1e-6, dataset_path="synthetic_pose_2d_dataset_1.npz"):
+def bilevel_optim_pose_2d_frank_wolfe(theta_initial, lam_min, lam_max, eps=1e-6, dataset_path_template="synthetic_pose_2d_dataset_{did}.npz", dataset_size=6):
     theta = theta_initial.copy()
-    loss_and_params = []
+    loss_graph = []
     best_theta = theta.copy()
-    best_loss = loss_function_pose2d(*build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path))
-    loss_and_params.append(loss_function_pose2d(*build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path)))
-    for i in range(10000):
-        
-        grad = numerical_gradient_pose2d(theta, eps)
-        print(i, theta, grad) if i % 10 == 0 else None
-        theta -= learning_rate * grad
-        loss = loss_function_pose2d(*build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path))
-        loss_and_params.append(loss)
+    best_loss = float(0)
+    for dataset_id in range(1, dataset_size+1):
+        dataset_path = dataset_path_template.format(did=dataset_id)
+        best_loss += loss_function_pose2d(*build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path))
+    best_loss /= dataset_size
+    loss_graph.append(best_loss)
+    # todo: implement early stopping w patience with validation trajectories
+    for i in range(2000):  
+        grad = gradient_pose2d(theta, eps, dataset_path_template, dataset_size)
+        theta = frank_wolfe_step(theta, grad, i, lam_min, lam_max, M=2000)
+        loss = float(0)
+        for dataset_id in range(1, dataset_size+1):
+            dataset_path = dataset_path_template.format(did=dataset_id)
+            loss += loss_function_pose2d(*build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path))
+        loss /= dataset_size
+        loss_graph.append(loss)
+
         if loss < best_loss:
             best_theta = theta.copy()
             best_loss = loss
-        
-    return best_theta, loss_and_params
 
-def bilevel_optim_pose2d(theta_initial, eps=1e-6, learning_rate=1e-5, dataset_path="synthetic_pose_2d_dataset_1.npz"):
-    theta = theta_initial.copy()
-    loss_and_params = []
-    best_theta = theta.copy()
-    best_loss = loss_function_pose2d(*build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path))
-    loss_and_params.append(loss_function_pose2d(*build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path)))
-    for i in range(2500):
-        grad = gradient_pose2d(theta,eps, dataset_path)
-        print(i, theta, grad) if i % 10 == 0 else None
-        theta -= learning_rate * grad
-        loss = loss_function_pose2d(*build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path))
-        loss_and_params.append(loss)
-        if loss < best_loss:
-            best_theta = theta.copy()
-            best_loss = loss
-    return best_theta, loss_and_params
+        if i % 10 == 0:
+            print(f"Iter {i}: Loss={loss:.4f}, theta={theta}")
 
-def optimize_params(theta_initial, eps=1e-6, learning_rate=2e-4, dataset_path="synthetic_pose_2d_dataset_1.npz"):
-    if dataset_path == "synthetic_pose_2d_dataset_1.npz":
-        learning_rate = np.array([2e-4, 2e-4, 2e-4, 1e-3, 1e-3, 1e-7])
+    return best_theta, loss_graph
 
-        theta, loss_and_params = bilevel_optim_pose2d(theta_initial, eps, learning_rate, dataset_path)
+
+def optimize_params(theta_initial, eps=1e-6, dataset_path_template="synthetic_pose_2d_dataset_{did}.npz", dataset_size=6):
+    lam_min = np.array([0.01, 0.01, 0.01, 0.1, 0.1, 500])
+    lam_max = np.array([3, 3, 3, 10, 10, 9999])
+    # theta, loss_graph = bilevel_optim_pose2d(theta_initial, eps, learning_rate, dataset_path)
+    theta, loss_graph = bilevel_optim_pose_2d_frank_wolfe(theta_initial, lam_min, lam_max, eps, dataset_path_template, dataset_size)
+    for did in range(1, dataset_size+1):
+        dataset_path = dataset_path_template.format(did=did)
         optimized_traj, gt = build_and_solve_pose_2d_fg((theta[0:3], theta[3:6]), dataset_path)
-        np.savez(f"output/bilevel_optim_traj.npz", traj=optimized_traj, gt=gt, params=theta_initial)
+        np.savez(f"output/pose2d_trajs/optim_traj_ds_{dataset_path.split('_')[4][0]}.npz", traj=optimized_traj, gt=gt, params=theta_initial)
         print(theta[0], theta[1], theta[2])
         print(theta[3], theta[4], theta[5])
-        print(len(loss_and_params))
-        plt.plot(loss_and_params)
+        print(len(loss_graph))
+        plt.plot(loss_graph)
         # plt.show()
         plt.savefig(f"output/figs/bilevel_optim_loss.png")
         plt.close()
 
+
 if __name__ == "__main__":
-    theta_initial = np.array([0.05, 0.02, 0.02,2.2, 2.2, 999.0])
-    optimize_params(theta_initial)
+    theta_initial = np.array([0.02, 0.02, 0.02,3, 3, 999.0])
+    optimize_params(theta_initial, dataset_path_template="synthetic_pose_2d_dataset_{did}.npz", dataset_size=6)
